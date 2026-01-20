@@ -15,10 +15,11 @@ st.set_page_config(page_title="System Magazynowy", layout="wide")
 # --- NAWIGACJA ---
 menu = st.sidebar.radio("Nawigacja", ["📊 Przegląd", "📂 Kategorie", "📦 Produkty"])
 
-# --- FUNKCJE ---
+# --- FUNKCJE POMOCNICZE ---
 def pobierz_dane(tabela):
     try:
-        return supabase.table(tabela).select("*").execute().data
+        # Sortujemy dane po ID, żeby lista była stabilna
+        return supabase.table(tabela).select("*").order("id").execute().data
     except Exception as e:
         st.error(f"Błąd pobierania z {tabela}: {e}")
         return []
@@ -29,25 +30,25 @@ if menu == "📊 Przegląd":
     produkty = pobierz_dane("produkty")
     
     if produkty:
-        # Obliczenia bez pandas
-        calkowita_wartosc = sum(p['cena'] * p['liczba'] for p in produkty)
-        suma_sztuk = sum(p['liczba'] for p in produkty)
-        liczba_pozycji = len(produkty)
-        
-        # Metryki na górze strony
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Wartość towaru", f"{calkowita_wartosc:,.2f} zł")
-        m2.metric("Suma jednostek", suma_sztuk)
-        m3.metric("Liczba produktów", liczba_pozycji)
-        
-        st.divider()
-        
-        # Sekcja alertów
-        niskie_stany = [p for p in produkty if p['liczba'] < 5]
-        if niskie_stany:
-            st.warning(f"⚠️ Uwaga: {len(niskie_stany)} produkty są bliskie wyczerpania!")
-            for np in niskie_stany:
-                st.write(f"- {np['nazwa']} (zostało tylko: **{np['liczba']} szt.**)")
+        try:
+            calkowita_wartosc = sum(float(p['cena']) * int(p['liczba']) for p in produkty)
+            suma_sztuk = sum(int(p['liczba']) for p in produkty)
+            liczba_pozycji = len(produkty)
+            
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Wartość towaru", f"{calkowita_wartosc:,.2f} zł")
+            m2.metric("Suma jednostek", suma_sztuk)
+            m3.metric("Liczba produktów", liczba_pozycji)
+            
+            st.divider()
+            
+            niskie_stany = [p for p in produkty if int(p['liczba']) < 5]
+            if niskie_stany:
+                st.warning(f"⚠️ Uwaga: {len(niskie_stany)} produkty są bliskie wyczerpania!")
+                for np in niskie_stany:
+                    st.write(f"- {np['nazwa']} (zostało tylko: **{np['liczba']} szt.**)")
+        except Exception as e:
+            st.error(f"Błąd podczas obliczeń statystyk: {e}")
     else:
         st.info("Magazyn jest pusty. Dodaj produkty, aby zobaczyć statystyki.")
 
@@ -55,15 +56,18 @@ if menu == "📊 Przegląd":
 elif menu == "📂 Kategorie":
     st.header("Zarządzanie Kategoriami")
     
-    # Formularz w expanderze (ładniejszy UI)
     with st.expander("➕ Dodaj nową kategorię"):
         with st.form("form_kat", clear_on_submit=True):
             nazwa_k = st.text_input("Nazwa kategorii")
             opis_k = st.text_input("Krótki opis")
             if st.form_submit_button("Zapisz kategorię"):
                 if nazwa_k:
-                    supabase.table("kategorie").insert({"nazwa": nazwa_k, "opis": opis_k}).execute()
-                    st.rerun()
+                    try:
+                        supabase.table("kategorie").insert({"nazwa": nazwa_k, "opis": opis_k}).execute()
+                        st.success("Dodano kategorię!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Błąd bazy danych: {e}")
                 else:
                     st.error("Nazwa jest wymagana!")
 
@@ -73,10 +77,13 @@ elif menu == "📂 Kategorie":
         with st.container(border=True):
             c1, c2 = st.columns([5, 1])
             c1.markdown(f"### {k['nazwa']}")
-            if k['opis']: c1.caption(k['opis'])
+            if k.get('opis'): c1.caption(k['opis'])
             if c2.button("Usuń", key=f"kat_{k['id']}"):
-                supabase.table("kategorie").delete().eq("id", k['id']).execute()
-                st.rerun()
+                try:
+                    supabase.table("kategorie").delete().eq("id", k['id']).execute()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Nie można usunąć kategorii (prawdopodobnie są do niej przypisane produkty).")
 
 # --- 3. PRODUKTY ---
 elif menu == "📦 Produkty":
@@ -97,34 +104,43 @@ elif menu == "📦 Produkty":
                 liczba_p = col2.number_input("Ilość", min_value=0, step=1)
                 
                 if st.form_submit_button("Dodaj do stanu"):
-                    payload = {
-                        "nazwa": nazwa_p, 
-                        "liczba": liczba_p, 
-                        "cena": cena_p, 
-                        "kategoria_id": mapa_kat[kat_p]
-                    }
-                    supabase.table("produkty").insert(payload).execute()
-                    st.rerun()
+                    if nazwa_p:
+                        payload = {
+                            "nazwa": nazwa_p, 
+                            "liczba": liczba_p, 
+                            "cena": cena_p, 
+                            "kategoria_id": mapa_kat[kat_p]
+                        }
+                        try:
+                            # Próba zapisu
+                            supabase.table("produkty").insert(payload).execute()
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Błąd zapisu produktu: {e}")
+                    else:
+                        st.error("Podaj nazwę produktu!")
 
     st.subheader("Aktualny inwentarz")
     produkty = pobierz_dane("produkty")
     
-    # Wyświetlanie jako estetyczna lista/karty
     for p in produkty:
         with st.container(border=True):
             c1, c2, c3, c4 = st.columns([3, 2, 2, 1])
             c1.write(f"**{p['nazwa']}**")
             
-            # Kolorowy wskaźnik stanu
-            if p['liczba'] == 0:
+            liczba = p.get('liczba', 0)
+            if liczba == 0:
                 c2.error("Brak na stanie")
-            elif p['liczba'] < 5:
-                c2.warning(f"Niski stan: {p['liczba']}")
+            elif liczba < 5:
+                c2.warning(f"Niski stan: {liczba}")
             else:
-                c2.success(f"Dostępne: {p['liczba']}")
+                c2.success(f"Dostępne: {liczba}")
                 
-            c3.write(f"{p['cena']:.2f} zł / szt.")
+            c3.write(f"{float(p.get('cena', 0)):.2f} zł / szt.")
             
             if c4.button("Usuń", key=f"prod_{p['id']}"):
-                supabase.table("produkty").delete().eq("id", p['id']).execute()
-                st.rerun()
+                try:
+                    supabase.table("produkty").delete().eq("id", p['id']).execute()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Błąd usuwania: {e}")
